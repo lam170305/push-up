@@ -1,0 +1,18 @@
+1. Mở PowerShell
+Nhấn Win + X → chọn Terminal hoặc Windows PowerShell
+
+2. Di chuyển vào folder project
+powershell
+cd "E:\index.js\chong day\pushup-counter"
+3. Chạy server
+powershell
+npm run dev
+→ Terminal hiện:
+
+text
+  VITE v8.3.5  ready in 171 ms
+  ➜  Local:   http://localhost:5173/
+4. Mở Chrome → vào địa chỉ đó
+text
+http://localhost:5173/
+⚠️ Nhớ xem port terminal in ra — có thể là 5173, 5174, 5175... tùy cái nào trống.
