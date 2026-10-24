@@ -9,6 +9,9 @@ const counterEl = document.getElementById("counter");
 const timerEl = document.getElementById("timer");
 const paceEl = document.getElementById("pace");
 const btnReset = document.getElementById("btnReset");
+const phaseEl = document.getElementById("phase");
+const phasePill = document.getElementById("phasePill");
+const primaryCard = document.querySelector(".stat-card.primary");
 const ctx = canvas.getContext("2d");
 
 let poseLandmarker = null;
@@ -88,6 +91,20 @@ function calcAngle(a, b, c) {
 }
 
 const visible = (p) => p && p.visibility > VIS_THRESHOLD;
+
+// ---------- HUD: pha động tác + thanh tiến trình ----------
+function setPhase(label, kind) {
+  if (!phaseEl || !phasePill) return;
+  phaseEl.textContent = label;
+  phasePill.classList.toggle("is-up", kind === "up");
+  phasePill.classList.toggle("is-down", kind === "down");
+}
+
+function setRepProgress(percent) {
+  if (primaryCard) {
+    primaryCard.style.setProperty("--rep-progress", `${percent}%`);
+  }
+}
 
 // ---------- Góc khuỷu: ưu tiên bên tay thấy rõ hơn ----------
 function getElbowAngle(lm) {
@@ -260,6 +277,8 @@ function resetAll() {
   smoothAngle = null;
   counterEl.textContent = "0";
   paceEl.textContent = "--";
+  setPhase("READY", "ready");
+  setRepProgress(0);
   stopTimer();
   statusEl.textContent = "Đã reset. Sẵn sàng!";
   statusEl.classList.remove("form-warn", "success");
@@ -333,6 +352,7 @@ function detectLoop() {
         statusEl.classList.add("form-warn");
         statusEl.classList.remove("success");
         angleEl.textContent = "--°";
+        setPhase("READY", "ready");
       } else {
         smoothAngle =
           smoothAngle === null
@@ -341,6 +361,7 @@ function detectLoop() {
 
         const angle = smoothAngle;
         angleEl.textContent = `${Math.round(angle)}°`;
+        setPhase(angle < DOWN_ANGLE ? "DOWN" : "UP", angle < DOWN_ANGLE ? "down" : "up");
 
         const inPosition = isInPushupPosition(lm);
         const formOk = isFormValid(lm);
@@ -382,6 +403,10 @@ function detectLoop() {
               count++;
               counterEl.textContent = count;
               popCounter();
+
+              const inCycle = count % 10;
+              setRepProgress(inCycle === 0 ? 100 : inCycle * 10);
+
               if (count === 1) startTimer();
 
               const elapsedSec = (Date.now() - startTime) / 1000;
@@ -408,6 +433,7 @@ function detectLoop() {
     } else {
       statusEl.textContent = "Không thấy người trong khung hình";
       angleEl.textContent = "--°";
+      setPhase("READY", "ready");
     }
   }
 
