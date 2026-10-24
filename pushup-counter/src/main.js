@@ -1,429 +1,374 @@
 import "./style.css";
-import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { THRESHOLDS } from "./lib/config.js";
+import { PHASE } from "./lib/tracker.js";
+import { PlayerSession } from "./lib/player-session.js";
+import { PoseEngine } from "./lib/pose-engine.js";
+import { SkeletonRenderer } from "./lib/renderer.js";
 
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const statusEl = document.getElementById("status");
-const angleEl = document.getElementById("angle");
-const counterEl = document.getElementById("counter");
-const timerEl = document.getElementById("timer");
-const paceEl = document.getElementById("pace");
-const btnReset = document.getElementById("btnReset");
-const ctx = canvas.getContext("2d");
-
-let poseLandmarker = null;
-let lastVideoTime = -1;
-
-// ---------- Ngưỡng (dựa trên góc khuỷu tay) ----------
-const DOWN_ANGLE = 95;      // khuỷu gập sâu -> trạng thái DOWN
-const UP_ANGLE = 150;       // khuỷu duỗi gần thẳng -> trạng thái UP
-const FORM_TOLERANCE = 35;  // độ lệch cho phép khi kiểm tra thân thẳng
-const HORIZONTAL_THRESHOLD = 0.45;
-const VIS_THRESHOLD = 0.5;
-const ANGLE_SMOOTHING = 0.4; // 0..1 (càng nhỏ càng mượt)
-const MIN_REP_MS = 450;      // rep ngắn hơn coi như nhiễu
-const MAX_REP_MS = 8000;     // rep dài hơn coi như bỏ dở
-
-// ---------- Landmark indices ----------
-const L = {
-  L_SHOULDER: 11, L_ELBOW: 13, L_WRIST: 15, L_HIP: 23, L_KNEE: 25, L_ANKLE: 27,
-  R_SHOULDER: 12, R_ELBOW: 14, R_WRIST: 16, R_HIP: 24, R_KNEE: 26, R_ANKLE: 28,
+const els = {
+  video: document.getElementById("video"),
+  canvas: document.getElementById("canvas"),
+  videoCard: document.getElementById("videoCard"),
+  angle: document.getElementById("angle"),
+  phaseChip: document.getElementById("phaseChip"),
+  depthFill: document.getElementById("depthFill"),
+  depthValue: document.getElementById("depthValue"),
+  counter: document.getElementById("counter"),
+  counterFloat: document.getElementById("counterFloat"),
+  sessionBadge: document.getElementById("sessionBadge"),
+  repMeta: document.getElementById("repMeta"),
+  timer: document.getElementById("timer"),
+  pace: document.getElementById("pace"),
+  status: document.getElementById("status"),
+  statusCard: document.getElementById("statusCard"),
+  btnReset: document.getElementById("btnReset"),
+  btnRetry: document.getElementById("btnRetry"),
+  liveBadge: document.getElementById("liveBadge"),
+  liveText: document.getElementById("liveText"),
+  loadingOverlay: document.getElementById("loadingOverlay"),
+  loadingText: document.getElementById("loadingText"),
+  errorOverlay: document.getElementById("errorOverlay"),
+  errorTitle: document.getElementById("errorTitle"),
+  errorMessage: document.getElementById("errorMessage"),
 };
 
-// Bỏ toàn bộ điểm trên mặt: chỉ giữ vai, khuỷu, cổ tay, hông, gối, cổ chân
-const KEEP_LANDMARKS = [
-  L.L_SHOULDER, L.L_ELBOW, L.L_WRIST,
-  L.R_SHOULDER, L.R_ELBOW, L.R_WRIST,
-  L.L_HIP, L.L_KNEE, L.L_ANKLE,
-  L.R_HIP, L.R_KNEE, L.R_ANKLE,
-];
+const player = new PlayerSession({ name: "Bạn" });
+const renderer = new SkeletonRenderer(els.canvas);
+const engine = new PoseEngine({ numPoses: 1 });
 
-// Chỉ nối tay + thân
-const KEEP_CONNECTIONS = [
-  // Tay trái
-  [L.L_SHOULDER, L.L_ELBOW],
-  [L.L_ELBOW, L.L_WRIST],
-  // Tay phải
-  [L.R_SHOULDER, L.R_ELBOW],
-  [L.R_ELBOW, L.R_WRIST],
-  // Vai nối 2 bên
-  [L.L_SHOULDER, L.R_SHOULDER],
-  // Thân trái
-  [L.L_SHOULDER, L.L_HIP],
-  [L.L_HIP, L.L_KNEE],
-  [L.L_KNEE, L.L_ANKLE],
-  // Thân phải
-  [L.R_SHOULDER, L.R_HIP],
-  [L.R_HIP, L.R_KNEE],
-  [L.R_KNEE, L.R_ANKLE],
-  // Hông nối 2 bên
-  [L.L_HIP, L.R_HIP],
-];
+const ui = {
+  count: 0,
+  phaseKey: "",
+  phaseLabel: "",
+  statusText: "",
+  statusTone: "",
+  depth: -1,
+};
 
-// ---------- Màu vẽ (giống tham chiếu) ----------
-const DOT_FILL = "#FFC400";      // vàng
-const DOT_STROKE = "#1a1a1a";    // viền đậm
-const LINE_COLOR = "#ffffff";    // đường trắng
+let notice = null;
 
-// ---------- State ----------
-let state = "UP";
-let sessionActive = false;
-let sessionStartTime = 0;
-let count = 0;
-let startTime = null;
-let timerInterval = null;
-let smoothAngle = null;
-
-// ---------- Tính góc ----------
-function calcAngle(a, b, c) {
-  const v1 = { x: a.x - b.x, y: a.y - b.y };
-  const v2 = { x: c.x - b.x, y: c.y - b.y };
-  const dot = v1.x * v2.x + v1.y * v2.y;
-  const mag1 = Math.hypot(v1.x, v1.y);
-  const mag2 = Math.hypot(v2.x, v2.y);
-  if (mag1 === 0 || mag2 === 0) return 0;
-  let cos = dot / (mag1 * mag2);
-  cos = Math.max(-1, Math.min(1, cos));
-  return Math.acos(cos) * (180 / Math.PI);
+function setText(element, value) {
+  if (element.textContent !== value) element.textContent = value;
 }
 
-const visible = (p) => p && p.visibility > VIS_THRESHOLD;
-
-// ---------- Góc khuỷu: ưu tiên bên tay thấy rõ hơn ----------
-function getElbowAngle(lm) {
-  const leftParts = [lm[L.L_SHOULDER], lm[L.L_ELBOW], lm[L.L_WRIST]];
-  const rightParts = [lm[L.R_SHOULDER], lm[L.R_ELBOW], lm[L.R_WRIST]];
-
-  const leftVis = leftParts.reduce((s, p) => s + (p?.visibility ?? 0), 0) / 3;
-  const rightVis = rightParts.reduce((s, p) => s + (p?.visibility ?? 0), 0) / 3;
-
-  const leftOk = leftVis >= VIS_THRESHOLD;
-  const rightOk = rightVis >= VIS_THRESHOLD;
-
-  if (!leftOk && !rightOk) return null;
-
-  const angleLeft = leftOk ? calcAngle(...leftParts) : null;
-  const angleRight = rightOk ? calcAngle(...rightParts) : null;
-
-  if (angleLeft !== null && angleRight !== null) {
-    // Bên thấy rõ hơn được trọng số cao hơn
-    const wL = leftVis / (leftVis + rightVis);
-    return angleLeft * wL + angleRight * (1 - wL);
-  }
-  return angleLeft ?? angleRight;
+function formatTime(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
 }
 
-// ---------- Kiểm tra thân thẳng (không bắt buộc thấy cổ chân) ----------
-function isFormValid(lm) {
-  const leftVis =
-    ((lm[L.L_SHOULDER]?.visibility ?? 0) +
-      (lm[L.L_HIP]?.visibility ?? 0) +
-      (lm[L.L_ANKLE]?.visibility ?? 0)) / 3;
-  const rightVis =
-    ((lm[L.R_SHOULDER]?.visibility ?? 0) +
-      (lm[L.R_HIP]?.visibility ?? 0) +
-      (lm[L.R_ANKLE]?.visibility ?? 0)) / 3;
-  const side = leftVis > rightVis ? "L" : "R";
-
-  const shoulder = lm[L[`${side}_SHOULDER`]];
-  const hip = lm[L[`${side}_HIP`]];
-  const ankle = lm[L[`${side}_ANKLE`]];
-
-  if (!shoulder || !hip) return true;
-
-  // Nếu thấy cổ chân -> kiểm tra cả thân: vai - hông - cổ chân
-  if (visible(ankle)) {
-    return calcAngle(shoulder, hip, ankle) > 180 - FORM_TOLERANCE;
-  }
-
-  // Không thấy cổ chân -> dùng gối làm mốc thay thế
-  const knee = lm[L[`${side}_KNEE`]];
-  if (visible(hip) && visible(knee)) {
-    return calcAngle(shoulder, hip, knee) > 180 - FORM_TOLERANCE;
-  }
-
-  // Không đủ điểm để kiểm tra -> không chặn rep
-  return true;
+function setLiveState(state, label) {
+  els.liveBadge.dataset.state = state;
+  setText(els.liveText, label);
 }
 
-// ---------- Kiểm tra tư thế chống đẩy (dựa trên tay) ----------
-function isInPushupPosition(lm) {
-  const ls = lm[L.L_SHOULDER];
-  const rs = lm[L.R_SHOULDER];
-  const lw = lm[L.L_WRIST];
-  const rw = lm[L.R_WRIST];
-
-  if (!visible(ls) || !visible(rs) || !visible(lw) || !visible(rw)) return false;
-
-  const shoulderY = (ls.y + rs.y) / 2;
-  const wristY = (lw.y + rw.y) / 2;
-
-  // Cổ tay phải ở dưới vai (tay chống xuống sàn)
-  const handsBelowShoulders = wristY >= shoulderY - 0.02;
-  if (!handsBelowShoulders) return false;
-
-  // Thân gần nằm ngang: dùng cổ chân nếu thấy, nếu không thì dùng hông
-  const ankleVis =
-    (lm[L.L_ANKLE]?.visibility ?? 0) + (lm[L.R_ANKLE]?.visibility ?? 0);
-  if (ankleVis > VIS_THRESHOLD * 2) {
-    const ankleY = (lm[L.L_ANKLE].y + lm[L.R_ANKLE].y) / 2;
-    return Math.abs(shoulderY - ankleY) < HORIZONTAL_THRESHOLD;
-  }
-
-  const hipVis = (lm[L.L_HIP]?.visibility ?? 0) + (lm[L.R_HIP]?.visibility ?? 0);
-  if (hipVis > VIS_THRESHOLD * 2) {
-    const hipY = (lm[L.L_HIP].y + lm[L.R_HIP].y) / 2;
-    return Math.abs(shoulderY - hipY) < HORIZONTAL_THRESHOLD;
-  }
-
-  return true;
+function setLoading(active, text) {
+  els.loadingOverlay.classList.toggle("is-hidden", !active);
+  els.videoCard.setAttribute("aria-busy", String(active));
+  if (text) setText(els.loadingText, text);
 }
 
-// ---------- Vẽ skeleton: chấm vàng + đường trắng ----------
-function drawSkeleton(lm) {
-  const px = (p) => ({ x: p.x * canvas.width, y: p.y * canvas.height });
+function syncVideoSize() {
+  if (!renderer.resize(els.video)) return;
 
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
+  const ratio =
+    els.video.videoWidth && els.video.videoHeight
+      ? `${els.video.videoWidth} / ${els.video.videoHeight}`
+      : "16 / 9";
 
-  // Đường nối
-  ctx.strokeStyle = LINE_COLOR;
-  ctx.lineWidth = Math.max(3, canvas.width / 150);
-  ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
-  ctx.shadowBlur = 6;
+  els.videoCard.style.setProperty("--video-ratio", ratio);
+}
 
-  for (const [a, b] of KEEP_CONNECTIONS) {
-    const pa = lm[a];
-    const pb = lm[b];
-    if (!visible(pa) || !visible(pb)) continue;
+function renderStatus(text, tone = "neutral") {
+  if (text === ui.statusText && tone === ui.statusTone) return;
+  ui.statusText = text;
+  ui.statusTone = tone;
+  setText(els.status, text);
+  els.statusCard.dataset.tone = tone;
+}
 
-    const p1 = px(pa);
-    const p2 = px(pb);
-    ctx.beginPath();
-    ctx.moveTo(p1.x, p1.y);
-    ctx.lineTo(p2.x, p2.y);
-    ctx.stroke();
+function renderCount(count, animate = true) {
+  if (count === ui.count) return;
+
+  ui.count = count;
+  setText(els.counter, String(count));
+  setText(els.counterFloat, String(count));
+
+  if (!animate) return;
+
+  els.counter.classList.remove("pop");
+  void els.counter.offsetWidth;
+  els.counter.classList.add("pop");
+}
+
+function renderStats(stats) {
+  setText(els.timer, formatTime(stats.elapsedMs));
+  setText(
+    els.pace,
+    stats.pace === null ? "--" : String(Math.round(stats.pace))
+  );
+  setText(
+    els.repMeta,
+    stats.lastRepMs === null
+      ? "Rep đầu tiên sẽ bắt đầu tính giờ"
+      : `Rep gần nhất · ${(stats.lastRepMs / 1000).toFixed(1)}s`
+  );
+  setText(els.sessionBadge, stats.count === 0 ? "Sẵn sàng" : "Đang tập");
+}
+
+function getPhaseMeta(frame) {
+  if (frame.angle === null) return { key: "idle", label: "MẤT DẤU" };
+  if (!frame.inPosition) return { key: "idle", label: "CHỜ TƯ THẾ" };
+
+  if (frame.phase === PHASE.DOWN) {
+    return frame.angle <= THRESHOLDS.deepAngle
+      ? { key: "down", label: "ĐỦ SÂU" }
+      : { key: "down", label: "HẠ XUỐNG" };
   }
 
-  ctx.shadowBlur = 0;
+  if (frame.phase === PHASE.UP) return { key: "up", label: "ĐẨY LÊN" };
+  if (frame.phase === PHASE.READY) {
+    return { key: "ready", label: "SẴN SÀNG" };
+  }
 
-  // Chấm tròn
-  const dotR = Math.max(6, canvas.width / 80);
-  for (const idx of KEEP_LANDMARKS) {
-    const p = lm[idx];
-    if (!visible(p)) continue;
+  return { key: "idle", label: "CHỜ" };
+}
 
-    const { x, y } = px(p);
-    ctx.beginPath();
-    ctx.arc(x, y, dotR, 0, Math.PI * 2);
-    ctx.fillStyle = DOT_FILL;
-    ctx.fill();
+function renderPhase(frame) {
+  const phase = getPhaseMeta(frame);
 
-    ctx.lineWidth = Math.max(2, dotR / 3);
-    ctx.strokeStyle = DOT_STROKE;
-    ctx.stroke();
+  if (phase.key !== ui.phaseKey) {
+    ui.phaseKey = phase.key;
+    els.phaseChip.dataset.phase = phase.key;
+  }
+
+  if (phase.label !== ui.phaseLabel) {
+    ui.phaseLabel = phase.label;
+    setText(els.phaseChip, phase.label);
   }
 }
 
-// ---------- Timer ----------
-function startTimer() {
-  if (startTime) return;
-  startTime = Date.now();
-
-  timerInterval = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    const m = String(Math.floor(elapsed / 60)).padStart(2, "0");
-    const s = String(elapsed % 60).padStart(2, "0");
-    timerEl.textContent = `${m}:${s}`;
-
-    if (elapsed > 5) {
-      paceEl.textContent = Math.round((count / elapsed) * 60);
-    }
-  }, 250);
-}
-
-function stopTimer() {
-  if (timerInterval) {
-    clearInterval(timerInterval);
-    timerInterval = null;
-  }
-  startTime = null;
-  timerEl.textContent = "00:00";
-}
-
-// ---------- Reset ----------
-function resetAll() {
-  count = 0;
-  state = "UP";
-  sessionActive = false;
-  sessionStartTime = 0;
-  smoothAngle = null;
-  counterEl.textContent = "0";
-  paceEl.textContent = "--";
-  stopTimer();
-  statusEl.textContent = "Đã reset. Sẵn sàng!";
-  statusEl.classList.remove("form-warn", "success");
-}
-
-btnReset.addEventListener("click", resetAll);
-
-// ---------- Pop animation ----------
-function popCounter() {
-  counterEl.classList.remove("pop");
-  void counterEl.offsetWidth;
-  counterEl.classList.add("pop");
-}
-
-// ---------- Khởi tạo MediaPipe ----------
-async function initMediaPipe() {
-  statusEl.textContent = "Đang tải model AI...";
-
-  const vision = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+function renderAngle(frame) {
+  setText(
+    els.angle,
+    frame.angle === null ? "--°" : `${Math.round(frame.angle)}°`
   );
 
-  poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions: {
-      modelAssetPath:
-        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-      delegate: "GPU",
-    },
-    runningMode: "VIDEO",
-    numPoses: 1,
-  });
+  const depth = Math.round(frame.depth * 100);
+  setText(els.depthValue, frame.angle === null ? "--" : `${depth}%`);
 
-  statusEl.textContent = "Model sẵn sàng. Đang bật camera...";
+  if (depth !== ui.depth) {
+    ui.depth = depth;
+    els.depthFill.style.width = `${depth}%`;
+    els.depthFill.classList.toggle("is-deep", depth >= 92);
+  }
 }
 
-// ---------- Camera ----------
-async function initCamera() {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: 640, height: 480 },
-    audio: false,
-  });
+function getStatus(frame) {
+  if (frame.angle === null) {
+    return {
+      text: "Đưa toàn bộ cơ thể vào khung hình để bắt đầu.",
+      tone: "warn",
+    };
+  }
 
-  video.srcObject = stream;
-  await new Promise((resolve) => {
-    video.onloadedmetadata = () => resolve();
-  });
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  await video.play();
-  statusEl.textContent = "Sẵn sàng. Vào tư thế chống đẩy!";
-}
+  if (!frame.inPosition) {
+    return {
+      text: "Vào tư thế chống đẩy, quay camera ngang hông.",
+      tone: "warn",
+    };
+  }
 
-// ---------- Detect loop ----------
-function detectLoop() {
-  const now = performance.now();
+  if (frame.form.checked && !frame.form.ok) {
+    return {
+      text: "Giữ thân thẳng và siết cơ bụng.",
+      tone: "warn",
+    };
+  }
 
-  if (video.currentTime !== lastVideoTime) {
-    lastVideoTime = video.currentTime;
-
-    const results = poseLandmarker.detectForVideo(video, now);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    if (results.landmarks && results.landmarks.length > 0) {
-      const lm = results.landmarks[0];
-      drawSkeleton(lm);
-
-      const rawAngle = getElbowAngle(lm);
-
-      if (rawAngle === null) {
-        statusEl.textContent = "Không thấy tay trong khung hình";
-        statusEl.classList.add("form-warn");
-        statusEl.classList.remove("success");
-        angleEl.textContent = "--°";
-      } else {
-        smoothAngle =
-          smoothAngle === null
-            ? rawAngle
-            : smoothAngle + (rawAngle - smoothAngle) * ANGLE_SMOOTHING;
-
-        const angle = smoothAngle;
-        angleEl.textContent = `${Math.round(angle)}°`;
-
-        const inPosition = isInPushupPosition(lm);
-        const formOk = isFormValid(lm);
-        const nowMs = Date.now();
-
-        // ===== BẮT ĐẦU REP =====
-        if (!sessionActive) {
-          if (inPosition && angle < DOWN_ANGLE) {
-            sessionActive = true;
-            sessionStartTime = nowMs;
-            state = "DOWN";
-            statusEl.textContent = "Đã xuống — đẩy lên!";
-            statusEl.classList.remove("form-warn", "success");
-          } else if (inPosition) {
-            statusEl.textContent = `Sẵn sàng xuống... (${Math.round(angle)}°)`;
-            statusEl.classList.remove("form-warn", "success");
-          } else {
-            statusEl.textContent = "⚠️ Chưa vào tư thế chống đẩy";
-            statusEl.classList.add("form-warn");
-            statusEl.classList.remove("success");
-          }
-        }
-        // ===== ĐANG TRONG REP =====
-        else {
-          const repMs = nowMs - sessionStartTime;
-
-          if (repMs > MAX_REP_MS) {
-            sessionActive = false;
-            state = "UP";
-            statusEl.textContent = "⏱️ Rep quá lâu — đã hủy, thử lại";
-            statusEl.classList.add("form-warn");
-            statusEl.classList.remove("success");
-          } else if (state === "DOWN" && angle > UP_ANGLE) {
-            if (repMs < MIN_REP_MS) {
-              statusEl.textContent = "⚡ Quá nhanh — hạ xuống chậm và sâu hơn";
-              statusEl.classList.add("form-warn");
-              statusEl.classList.remove("success");
-            } else if (formOk) {
-              count++;
-              counterEl.textContent = count;
-              popCounter();
-              if (count === 1) startTimer();
-
-              const elapsedSec = (Date.now() - startTime) / 1000;
-              if (elapsedSec > 5) {
-                paceEl.textContent = Math.round((count / elapsedSec) * 60);
-              }
-
-              statusEl.textContent = `✅ Rep ${count} hợp lệ!`;
-              statusEl.classList.add("success");
-              statusEl.classList.remove("form-warn");
-            } else {
-              statusEl.textContent = "⚠️ Thân không thẳng — không tính";
-              statusEl.classList.add("form-warn");
-              statusEl.classList.remove("success");
-            }
-            sessionActive = false;
-            state = "UP";
-          } else {
-            statusEl.textContent = `Đang xuống... (${Math.round(angle)}°)`;
-            statusEl.classList.remove("form-warn", "success");
-          }
-        }
-      }
-    } else {
-      statusEl.textContent = "Không thấy người trong khung hình";
-      angleEl.textContent = "--°";
+  if (frame.phase === PHASE.DOWN) {
+    if (frame.angle <= THRESHOLDS.deepAngle) {
+      return { text: "Đủ độ sâu — đẩy mạnh lên.", tone: "good" };
     }
+    return { text: "Hạ người xuống chậm và sâu hơn.", tone: "neutral" };
   }
 
-  requestAnimationFrame(detectLoop);
+  if (frame.phase === PHASE.UP) {
+    return { text: "Đẩy lên hết biên độ.", tone: "neutral" };
+  }
+
+  if (frame.phase === PHASE.READY) {
+    return { text: "Sẵn sàng — bắt đầu rep tiếp theo.", tone: "neutral" };
+  }
+
+  return { text: "Đang tìm tư thế chống đẩy…", tone: "neutral" };
 }
 
-// ---------- Start ----------
-async function main() {
+function handleEvent(event, stats, now) {
+  if (event.type === "rep") {
+    notice = {
+      text: `Rep ${stats.count} hợp lệ!`,
+      tone: "good",
+      until: now + 1500,
+    };
+    return;
+  }
+
+  const messages = {
+    fast: "Chậm lại — rep quá nhanh.",
+    shallow: "Chưa đủ sâu — hạ thấp hơn nữa.",
+    form: "Thân chưa thẳng — rep không được tính.",
+    timeout: "Rep quá lâu — đã hủy, thử lại.",
+    posture: "Ra khỏi tư thế — rep đã hủy.",
+    lost: "Mất dấu cơ thể — rep đã hủy.",
+  };
+
+  const text = messages[event.reason];
+  if (text) {
+    notice = { text, tone: "warn", until: now + 1800 };
+  }
+}
+
+function renderFrame(frame, now) {
+  renderAngle(frame);
+  renderPhase(frame);
+  renderCount(frame.stats.count);
+  renderStats(frame.stats);
+
+  if (frame.event) handleEvent(frame.event, frame.stats, now);
+
+  const status =
+    notice && now < notice.until ? notice : getStatus(frame);
+
+  renderStatus(status.text, status.tone);
+}
+
+function onFrame({ landmarks, now }) {
+  syncVideoSize();
+
+  const pose = landmarks[0] ?? null;
+
+  if (pose) {
+    renderer.draw(pose);
+  } else {
+    renderer.clear();
+  }
+
+  const frame = pose
+    ? player.update(pose, now)
+    : player.markMissing(now);
+
+  renderFrame(frame, now);
+}
+
+function resetSession() {
+  player.reset();
+  notice = null;
+  ui.depth = -1;
+  ui.count = -1;
+
+  renderCount(0, false);
+  renderStats(player.getStats());
+  renderAngle({ angle: null, depth: 0 });
+
+  ui.phaseKey = "idle";
+  ui.phaseLabel = "CHỜ TƯ THẾ";
+  els.phaseChip.dataset.phase = "idle";
+  setText(els.phaseChip, "CHỜ TƯ THẾ");
+
+  renderStatus("Đã làm mới — vào tư thế chống đẩy.", "neutral");
+}
+
+function describeError(error) {
+  if (error?.code === "insecure") {
+    return {
+      title: "Cần kết nối bảo mật",
+      message:
+        "Camera chỉ hoạt động trên HTTPS hoặc localhost. Hãy mở trang qua HTTPS hoặc chạy npm run dev.",
+    };
+  }
+
+  switch (error?.name) {
+    case "NotAllowedError":
+    case "SecurityError":
+      return {
+        title: "Chưa có quyền camera",
+        message:
+          "Bạn đã từ chối quyền camera. Hãy cấp quyền trong cài đặt trình duyệt rồi thử lại.",
+      };
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+      return {
+        title: "Không tìm thấy camera",
+        message: "Hãy kết nối webcam hoặc kiểm tra lại thiết bị.",
+      };
+    case "NotReadableError":
+    case "TrackStartError":
+      return {
+        title: "Camera đang bận",
+        message:
+          "Một ứng dụng khác đang sử dụng camera. Hãy đóng ứng dụng đó rồi thử lại.",
+      };
+    case "OverconstrainedError":
+      return {
+        title: "Camera không tương thích",
+        message:
+          "Thiết bị không hỗ trợ cấu hình camera này. Hãy thử webcam khác.",
+      };
+    default:
+      return {
+        title: "Không thể khởi động",
+        message:
+          error?.message ||
+          "Đã có lỗi không xác định. Hãy tải lại trang.",
+      };
+  }
+}
+
+function showError(error) {
+  const { title, message } = describeError(error);
+
+  setLiveState("error", "LỖI");
+  setLoading(false);
+  setText(els.errorTitle, title);
+  setText(els.errorMessage, message);
+  els.errorOverlay.classList.remove("is-hidden");
+  renderStatus(message, "warn");
+}
+
+function onEngineError(error) {
+  console.error(error);
+  showError(error);
+}
+
+async function start() {
+  els.btnReset.addEventListener("click", resetSession);
+  els.btnRetry.addEventListener("click", () => window.location.reload());
+  window.addEventListener("pagehide", () => engine.stop(), { once: true });
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) window.location.reload();
+  });
+
+  setLiveState("loading", "ĐANG TẢI");
+  setLoading(true, "Đang khởi động camera và model AI…");
+
   try {
-    await initMediaPipe();
-    await initCamera();
-    detectLoop();
-  } catch (err) {
-    console.error(err);
-    statusEl.textContent = "Lỗi: " + err.message;
+    await Promise.all([
+      engine.startCamera(els.video),
+      engine.initialize(),
+    ]);
+  } catch (error) {
+    engine.stop();
+    showError(error);
+    return;
   }
+
+  syncVideoSize();
+  setLoading(false);
+  setLiveState("live", "LIVE");
+  renderStatus("Camera đã sẵn sàng — vào tư thế chống đẩy.", "good");
+  engine.startFrameLoop(onFrame, onEngineError);
 }
 
-main();
+start();
