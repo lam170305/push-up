@@ -71,6 +71,7 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Ambient background glow */
 body::before {
   content: "";
   position: fixed;
