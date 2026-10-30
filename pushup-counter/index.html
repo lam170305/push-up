@@ -39,24 +39,25 @@
         </div>
 
         <div class="topbar-actions">
+          <button type="button" class="mode-btn" id="navHomeButton">Trang chủ</button>
           <div class="mode-switch" role="tablist" aria-label="Chế độ chơi">
             <button
               type="button"
-              class="mode-btn is-active"
+              class="mode-btn"
+              id="soloModeButton"
               role="tab"
-              aria-selected="true"
+              aria-selected="false"
             >
               Solo
             </button>
             <button
               type="button"
               class="mode-btn"
+              id="duelModeButton"
               role="tab"
               aria-selected="false"
-              disabled
-              title="Chế độ 1v1 sẽ sớm ra mắt"
             >
-              1v1 <span class="mode-soon">Sắp có</span>
+              1v1
             </button>
           </div>
 
@@ -67,7 +68,48 @@
         </div>
       </header>
 
-      <main class="layout">
+      <main class="home-screen" id="homeScreen">
+        <section class="home-hero">
+          <div class="home-copy">
+            <span class="home-kicker"><i></i> PUSH UP ARENA · SEASON 01</span>
+            <h2>VƯỢT QUA<br /><em>GIỚI HẠN.</em></h2>
+            <p>Luyện tập theo nhịp độ của bạn. Theo dõi từng rep bằng AI hoặc chuẩn bị bước vào đấu trường.</p>
+            <div class="home-actions">
+              <button type="button" class="home-primary" id="homeSoloButton">BẮT ĐẦU TẬP <span>↗</span></button>
+              <button type="button" class="home-secondary" id="homeDuelButton">⚔ TÌM ĐỐI THỦ</button>
+            </div>
+            <div class="home-footnote"><i></i> ĐẾM REP TỰ ĐỘNG <b>/</b> VIDEO XỬ LÝ CỤC BỘ</div>
+          </div>
+          <div class="home-art" aria-hidden="true">
+            <div class="art-grid"></div><div class="art-ring ring-a"></div><div class="art-ring ring-b"></div>
+            <div class="art-athlete"><i class="art-head"></i><i class="art-body"></i><i class="art-arm"></i><i class="art-leg"></i></div>
+            <span class="art-label">YOUR NEXT REP STARTS HERE</span><span class="art-index">01 <b>/</b> TRAINING</span>
+          </div>
+        </section>
+        <section class="mode-section">
+          <div class="mode-section-title"><div><span>CHỌN CHẾ ĐỘ</span><h2>VÀO CUỘC CHƠI</h2></div><small>CHỌN CÁCH BẠN MUỐN BỨT PHÁ</small></div>
+          <div class="mode-cards">
+            <button type="button" class="mode-card solo-card" id="soloCardButton"><span class="card-kicker">01 / SOLO</span><b>Luyện tập<br />đơn</b><span class="card-desc">Tập mọi lúc. Camera AI theo dõi tư thế và đếm rep ngay trên thiết bị.</span><span class="card-cta">VÀO LUYỆN TẬP <strong>→</strong></span><i class="card-orbit"></i></button>
+            <button type="button" class="mode-card duel-card" id="duelCardButton"><span class="card-kicker">02 / 1V1</span><b>Đối đầu<br />trực tuyến</b><span class="card-desc">Ghép trận, so rep trực tiếp và leo hạng trên bảng đấu.</span><span class="card-cta">KHÁM PHÁ CHẾ ĐỘ <strong>→</strong></span><span class="beta-tag">BETA</span><i class="card-orbit"></i></button>
+          </div>
+        </section>
+        <footer class="home-footer"><span>© 2026 PUSH UP ARENA</span><span>TRAIN HARD. PLAY FAIR.</span><span>MEDIAPIPE POSE</span></footer>
+      </main>
+
+      <main class="duel-screen is-hidden" id="duelScreen">
+        <button type="button" class="back-home" id="backFromDuel">← TRANG CHỦ</button>
+        <section class="duel-panel">
+          <span class="home-kicker"><i></i> RANKED MATCH · 1V1</span>
+          <h2>ĐẤU TRƯỜNG<br /><em>ĐỐI ĐẦU.</em></h2>
+          <p>So tài chống đẩy với người chơi khác. Mỗi rep hợp lệ sẽ được ghi nhận vào tỉ số trận.</p>
+          <div class="duel-versus"><div><span class="avatar you">YOU</span><b>BẠN</b><small>1247 ELO</small></div><strong>VS</strong><div><span class="avatar rival">?</span><b>ĐỐI THỦ</b><small>ĐANG TÌM</small></div></div>
+          <div class="duel-status" id="duelStatus" data-state="offline">Máy chủ ghép trận chưa kết nối. Giao diện 1v1 đã sẵn sàng; cần backend để tìm người chơi và đồng bộ điểm trực tuyến.</div>
+          <button type="button" class="home-primary duel-search" id="duelSearchButton">TÌM TRẬN <span>↗</span></button>
+        </section>
+      </main>
+
+      <main class="layout is-hidden" id="gameScreen">
+        <button type="button" class="game-home-link" id="backFromGame">← TRANG CHỦ</button>
         <section class="stage" aria-label="Camera và tư thế">
           <div class="video-card" id="videoCard" aria-busy="true">
             <video
